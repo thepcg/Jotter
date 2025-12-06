@@ -1,0 +1,11 @@
+## Interface: 110000
+## Title: Jotter
+## Notes: Simple on screen todo list with zone aware entries.
+## Author: Dennis Kurlinski & Sage
+## Version: 0.2
+## SavedVariables: JotterDB
+
+Jotter_Core.lua
+Jotter_MainUI.lua
+Jotter_EditorUI.lua
+Jotter_Minimap.lua
