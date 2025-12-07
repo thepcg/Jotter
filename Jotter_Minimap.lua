@@ -1,6 +1,7 @@
 local addonName, Jotter = ...
 
-local MINIMAP_ICON_PATH = "Interface\\AddOns\\Jotter\\Textures\\Jotter_Minimap_Icon_32_CircleMask_Desaturated"
+-- Use the shared icon path from Jotter if available
+local ICON_PATH = (Jotter and Jotter.ICON_PATH) or "Interface\\AddOns\\Jotter\\Textures\\Jotter_Minimap_Icon_32_CircleMask_Desaturated"
 
 local MINIMAP_BUTTON_NAME = "JotterMinimapButton"
 
@@ -116,8 +117,9 @@ function Jotter_CreateMinimapButton()
     btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
 
     local icon = btn:CreateTexture(nil, "ARTWORK")
-    icon:SetTexture(MINIMAP_ICON_PATH)
+    icon:SetTexture(ICON_PATH)
     icon:SetAllPoints(btn)
+
 
     -- Drag support
     btn:RegisterForDrag("LeftButton")

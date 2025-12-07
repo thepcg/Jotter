@@ -53,7 +53,8 @@ function Jotter:CreateMainFrame()
     local icon = titleBar:CreateTexture(nil, "ARTWORK")
     icon:SetSize(18, 18)
     icon:SetPoint("LEFT", 4, 0)
-    icon:SetTexture(134400)
+    icon:SetTexture(Jotter.ICON_PATH or 134400)
+
 
     local iconButton = CreateFrame("Button", nil, titleBar)
     iconButton:SetAllPoints(icon)
@@ -115,6 +116,7 @@ function Jotter:CreateMainFrame()
                 done = false,
                 zone = zone,
                 description = "",
+                coords = "",
             })
             Jotter:RefreshList()
             Jotter:RefreshEditor()
@@ -208,15 +210,26 @@ function Jotter:CreateMainFrame()
         row:SetScript("OnMouseUp", function(selfRow, button)
             local index = selfRow.todoIndex
             if not index then return end
-            if button == "RightButton" and IsShiftKeyDown() then
-                local todo = Jotter.db.todos[index]
-                if todo then
-                    local desc = Trim(todo.description or "")
-                    local sayText = desc ~= "" and desc or (todo.text or "")
-                    sayText = Trim(sayText)
-                    if sayText ~= "" then
-                        SendChatMessage(sayText, "SAY")
-                    end
+            local todo = Jotter.db.todos[index]
+            if not todo then return end
+
+            if button == "LeftButton"
+                and not IsShiftKeyDown()
+                and not IsControlKeyDown()
+                and not IsAltKeyDown()
+            then
+                -- Left click: if this todo has coordinates, create a waypoint
+                if Trim(todo.coords or "") ~= "" then
+                    Jotter:CreateWaypointForTodo(todo)
+                end
+
+            elseif button == "RightButton" and IsShiftKeyDown() then
+                -- Existing behavior: /say the description or text
+                local desc = Trim(todo.description or "")
+                local sayText = desc ~= "" and desc or (todo.text or "")
+                sayText = Trim(sayText)
+                if sayText ~= "" then
+                    SendChatMessage(sayText, "SAY")
                 end
             end
         end)

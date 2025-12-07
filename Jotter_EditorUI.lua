@@ -33,12 +33,19 @@ function Jotter:CreateEditorFrame()
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
 
+    -- Icon in the config window header
+    local icon = f:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(20, 20)
+    icon:SetPoint("TOPLEFT", 10, -8)
+    icon:SetTexture(Jotter.ICON_PATH or 134400)
+
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOPLEFT", 16, -12)
+    title:SetPoint("LEFT", icon, "RIGHT", 6, 0)
     title:SetText("Jotter Todos")
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -4, -4)
+
 
     ----------------------------------------------------------
     -- Options (top, spanning full width)
@@ -279,8 +286,21 @@ function Jotter:CreateEditorFrame()
     zoneEdit:SetMaxLetters(60)
     self.detailZoneEdit = zoneEdit
 
+    -- NEW: coordinates label + edit box
+    local coordLabel = detailBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    coordLabel:SetPoint("TOPLEFT", zoneLabel, "BOTTOMLEFT", 0, -8)
+    coordLabel:SetText("Coords:")
+
+    local coordEdit = CreateFrame("EditBox", nil, detailBox, "InputBoxTemplate")
+    coordEdit:SetAutoFocus(false)
+    coordEdit:SetHeight(18)
+    coordEdit:SetPoint("LEFT", coordLabel, "RIGHT", 4, 0)
+    coordEdit:SetPoint("RIGHT", -10, 0)
+    coordEdit:SetMaxLetters(40)
+    self.detailCoordsEdit = coordEdit
+
     local descLabel = detailBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    descLabel:SetPoint("TOPLEFT", zoneLabel, "BOTTOMLEFT", 0, -8)
+    descLabel:SetPoint("TOPLEFT", coordLabel, "BOTTOMLEFT", 0, -8)
     descLabel:SetText("Description:")
 
     local descScroll = CreateFrame("ScrollFrame", nil, detailBox, "UIPanelScrollFrameTemplate")
@@ -341,6 +361,44 @@ function Jotter:CreateEditorFrame()
         Jotter:RefreshEditor()
     end)
 
+    -- NEW: helper to save coords and auto-fill zone if blank
+    local function Jotter_SaveCoordsFromEdit(selfEdit)
+        if Jotter.updatingDetails then return end
+        local idx = Jotter.selectedTodoIndex
+        if not idx then return end
+        local todo = Jotter.db.todos[idx]
+        if not todo then return end
+
+        local value = Trim(selfEdit:GetText() or "")
+        todo.coords = value
+
+        -- If we now have coords but no zone, assume the current zone
+        local zoneText = Trim(todo.zone or "")
+        if value ~= "" and zoneText == "" then
+            local currentZone = Jotter.currentZone or GetCurrentZoneName()
+            todo.zone = currentZone
+
+            if Jotter.detailZoneEdit then
+                Jotter.updatingDetails = true
+                Jotter.detailZoneEdit:SetText(currentZone or "")
+                Jotter.updatingDetails = false
+            end
+        end
+
+        -- Main list may need to re-filter based on zone
+        Jotter:RefreshList()
+    end
+
+    coordEdit:SetScript("OnEnterPressed", function(selfEdit)
+        Jotter_SaveCoordsFromEdit(selfEdit)
+        selfEdit:ClearFocus()
+    end)
+
+    coordEdit:SetScript("OnEditFocusLost", function(selfEdit)
+        Jotter_SaveCoordsFromEdit(selfEdit)
+    end)
+
+
     ----------------------------------------------------------
     -- Bottom helper text + add button
     ----------------------------------------------------------
@@ -359,7 +417,13 @@ function Jotter:CreateEditorFrame()
         if Jotter.db.settings and Jotter.db.settings.useCurrentZoneByDefault then
             zone = Jotter.currentZone or GetCurrentZoneName()
         end
-        table.insert(Jotter.db.todos, 1, { text = "New todo", done = false, zone = zone, description = "" })
+        table.insert(Jotter.db.todos, 1, {
+            text        = "New todo",
+            done        = false,
+            zone        = zone,
+            description = "",
+            coords      = "",    -- NEW
+        })
         Jotter.selectedTodoIndex = 1
         Jotter:RefreshList()
         Jotter:RefreshEditor()
@@ -391,6 +455,9 @@ function Jotter:SetSelectedTodoIndex(index)
 
     self.updatingDetails = true
     self.detailZoneEdit:SetText(todo.zone or "")
+    if self.detailCoordsEdit then
+        self.detailCoordsEdit:SetText(todo.coords or "")   -- NEW
+    end
     self.detailDescEdit:SetText(todo.description or "")
     self.updatingDetails = false
 
@@ -402,6 +469,7 @@ function Jotter:SetSelectedTodoIndex(index)
         end
     end
 end
+
 
 function Jotter:ToggleEditor()
     if not self.editorFrame then return end
