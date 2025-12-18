@@ -1,72 +1,60 @@
 local addonName, Jotter = ...
 
--- Use the shared icon path from Jotter if available
-local ICON_PATH = (Jotter and Jotter.ICON_PATH) or "Interface\\AddOns\\Jotter\\Textures\\Jotter_Minimap_Icon_32_CircleMask_Desaturated"
-
+-----------------------------------------------------------------------
+-- Minimap button configuration (saved outside JotterDB for simplicity)
+-----------------------------------------------------------------------
 local MINIMAP_BUTTON_NAME = "JotterMinimapButton"
 
--- Optional: starting angle in radians (0 is to the right, Pi/2 is up)
-local Jotter_MinimapAngle = math.rad(45)
+Jotter_MinimapAngle = Jotter_MinimapAngle or 225 -- degrees
 
 -----------------------------------------------------------------------
--- Helper functions - adjust frame names if yours differ
+-- Toggle helpers
 -----------------------------------------------------------------------
-
--- Main UI toggle - assumes your main frame is called JotterMainFrame
 local function Jotter_ToggleMainUI()
-    local f = JotterMainFrame
-    if not f then return end
-
-    if f:IsShown() then
-        f:Hide()
+    if not Jotter or not Jotter.mainFrame then return end
+    if Jotter.mainFrame:IsShown() then
+        Jotter:SetMainVisible(false, "user")
     else
-        f:Show()
+        Jotter:SetMainVisible(true, "user")
+        Jotter:RefreshList()
     end
 end
 
--- Config opener - use the existing editor window
 local function Jotter_OpenConfig()
-    if Jotter and Jotter.ToggleEditor then
-        Jotter:ToggleEditor()
+    if Jotter and Jotter.ToggleConfig then
+        Jotter:ToggleConfig()
     end
 end
-
 
 -----------------------------------------------------------------------
 -- Minimap positioning helpers
 -----------------------------------------------------------------------
+local function Jotter_Minimap_UpdatePosition(self)
+    local angle = Jotter_MinimapAngle or 225
+    local rad = math.rad(angle)
 
-local function Jotter_Minimap_UpdatePosition(btn)
-    if not Minimap then return end
+    -- Keep the button outside the minimap ring. Use a dynamic radius so it works
+    -- for different minimap sizes and UI scales.
+    local radius = (Minimap:GetWidth() / 2) + 10
 
-    local radius = (Minimap:GetWidth() / 2) + 5  -- small offset to sit outside a bit
-    local x = math.cos(Jotter_MinimapAngle) * radius
-    local y = math.sin(Jotter_MinimapAngle) * radius
-
-    btn:SetPoint("CENTER", Minimap, "CENTER", x, y)
+    local x = math.cos(rad) * radius
+    local y = math.sin(rad) * radius
+    self:SetPoint("CENTER", Minimap, "CENTER", x, y)
 end
 
 local function Jotter_Minimap_OnUpdate(self)
-    if not Minimap then return end
-
     local mx, my = Minimap:GetCenter()
-    if not mx or not my then return end
-
-    local scale = Minimap:GetEffectiveScale()
     local px, py = GetCursorPosition()
-    px = px / scale
-    py = py / scale
+    local scale = UIParent:GetScale()
+    px, py = px / scale, py / scale
 
-    -- Calculate angle from minimap center to cursor
-    Jotter_MinimapAngle = math.atan2(py - my, px - mx)
-
+    Jotter_MinimapAngle = math.deg(math.atan2(py - my, px - mx))
     Jotter_Minimap_UpdatePosition(self)
 end
 
 -----------------------------------------------------------------------
 -- Minimap button scripts
 -----------------------------------------------------------------------
-
 local function Jotter_Minimap_OnClick(self, button)
     if button == "LeftButton" then
         if IsControlKeyDown() then
@@ -74,22 +62,23 @@ local function Jotter_Minimap_OnClick(self, button)
         else
             Jotter_ToggleMainUI()
         end
+    elseif button == "RightButton" then
+        if Jotter and Jotter.ToggleEditor then
+            Jotter:ToggleEditor()
+        end
     end
 end
-
-
 
 local function Jotter_Minimap_OnEnter(self)
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
     GameTooltip:SetText("Jotter", 1, 1, 1)
-
-    GameTooltip:AddLine("Click - Show or hide Jotter", 0.9, 0.9, 0.9)
+    GameTooltip:AddLine("Left Click - Toggle main window", 0.9, 0.9, 0.9)
+    GameTooltip:AddLine("Right Click - Open editor", 0.9, 0.9, 0.9)
     GameTooltip:AddLine("Ctrl-Click - Open configuration", 0.9, 0.9, 0.9)
-
     GameTooltip:Show()
 end
 
-local function Jotter_Minimap_OnLeave(self)
+local function Jotter_Minimap_OnLeave()
     GameTooltip:Hide()
 end
 
@@ -104,7 +93,6 @@ end
 -----------------------------------------------------------------------
 -- Creation
 -----------------------------------------------------------------------
-
 function Jotter_CreateMinimapButton()
     if _G[MINIMAP_BUTTON_NAME] then
         return
@@ -113,36 +101,29 @@ function Jotter_CreateMinimapButton()
     local btn = CreateFrame("Button", MINIMAP_BUTTON_NAME, Minimap)
     btn:SetSize(32, 32)
     btn:SetFrameStrata("MEDIUM")
-
-    btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-
-    local icon = btn:CreateTexture(nil, "ARTWORK")
-    icon:SetTexture(ICON_PATH)
-    icon:SetAllPoints(btn)
-
-
-    -- Drag support
+    btn:SetFrameLevel(8)
+    btn:RegisterForClicks("AnyUp")
     btn:RegisterForDrag("LeftButton")
-    btn:SetScript("OnDragStart", Jotter_Minimap_OnDragStart)
-    btn:SetScript("OnDragStop", Jotter_Minimap_OnDragStop)
+    btn:SetMovable(true)
+    btn:EnableMouse(true)
 
-    -- Mouse and tooltip
     btn:SetScript("OnClick", Jotter_Minimap_OnClick)
     btn:SetScript("OnEnter", Jotter_Minimap_OnEnter)
     btn:SetScript("OnLeave", Jotter_Minimap_OnLeave)
+    btn:SetScript("OnDragStart", Jotter_Minimap_OnDragStart)
+    btn:SetScript("OnDragStop", Jotter_Minimap_OnDragStop)
 
-    -- Initial position around the minimap
+    local icon = btn:CreateTexture(nil, "ARTWORK")
+    icon:SetTexture(Jotter.ICON_PATH or 134400)
+    icon:SetAllPoints(btn)
+    btn.icon = icon
+
     Jotter_Minimap_UpdatePosition(btn)
 end
 
------------------------------------------------------------------------
--- Hook into ADDON_LOADED
------------------------------------------------------------------------
-
-local f = CreateFrame("Frame")
-f:RegisterEvent("ADDON_LOADED")
-f:SetScript("OnEvent", function(self, event, name)
-    if name == addonName then
+-- Create minimap button after UI is ready
+C_Timer.After(1, function()
+    if Jotter_CreateMinimapButton then
         Jotter_CreateMinimapButton()
     end
 end)

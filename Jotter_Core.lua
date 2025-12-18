@@ -1,66 +1,160 @@
 local addonName, Jotter = ...
 Jotter = Jotter or {}
-_G.Jotter = Jotter   -- handy for /dump Jotter
+_G.Jotter = Jotter -- handy for /dump Jotter
 
--- Shared icon path for minimap, main UI, and config
+-- Shared icon path for minimap, main UI, editor, and config
 Jotter.ICON_PATH = "Interface\\AddOns\\Jotter\\Textures\\Jotter_Minimap_Icon_32_CircleMask_Desaturated"
 
+--------------------------------------------------------------
+-- Shared constants (layout helpers, not hard rules)
+--------------------------------------------------------------
+Jotter.maxEditorRows   = 20
+Jotter.rowHeightMain   = 18
+Jotter.rowGapMain      = 2
 
 --------------------------------------------------------------
--- Shared config
---------------------------------------------------------------
-Jotter.maxDisplayRows = 40
-Jotter.maxEditorRows = 20
-Jotter.rowHeightMain = 18
-Jotter.rowGapMain = 2
-
---------------------------------------------------------------
--- Utils
+-- Small helpers
 --------------------------------------------------------------
 function Jotter.Trim(str)
-    if not str then return "" end
-    return str:match("^%s*(.-)%s*$")
+    if str == nil then return "" end
+    str = tostring(str)
+    return (str:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+function Jotter.GetCurrentZoneName()
+    -- Retail: GetZoneText() is reliable for display name
+    local z = GetZoneText()
+    return Jotter.Trim(z)
 end
 
 local Trim = Jotter.Trim
-
-function Jotter.GetCurrentZoneName()
-    local name = GetRealZoneText() or GetZoneText() or ""
-    return name
-end
-
 local GetCurrentZoneName = Jotter.GetCurrentZoneName
 
--- Parse a coordinate string like "45, 62" or "45.3 62.8" into numeric x, y
-local function Jotter_ParseCoordsString(str)
-    if not str then return nil, nil end
-    str = Trim(str)
-    if str == "" then return nil, nil end
+local function Bool(v) return v and true or false end
 
-    -- Common "x, y" format
-    local x, y = str:match("(%d+%.?%d*)%s*[, ]%s*(%d+%.?%d*)")
-    if not x or not y then
-        -- Fallback: first two numbers in the string
-        local nums = {}
-        for num in str:gmatch("(%d+%.?%d*)") do
-            nums[#nums + 1] = num
-            if #nums >= 2 then break end
-        end
-        if #nums >= 2 then
-            x, y = nums[1], nums[2]
+--------------------------------------------------------------
+-- SavedVariables defaults + migration
+--------------------------------------------------------------
+local DEFAULTS = {
+    todos = {},
+    settings = {
+        -- Existing
+        useCurrentZoneByDefault = true,  -- Quick-add box uses current zone if enabled
+        hideCompletedOnMain     = false, -- If enabled, completed todos are hidden on the main UI
+
+        -- Feature 2: hide while in combat (default ON)
+        hideInCombat            = true,
+
+        -- Feature 5: lockable + resizable main UI
+        lockMainWindow          = false,
+        mainFrame = {
+            point = "CENTER",
+            relativePoint = "CENTER",
+            x = 0,
+            y = 0,
+            width = 260,
+            height = 220,
+        },
+
+        -- Feature 3: categories
+        categoryOrder     = {},  -- array of category names in desired order
+        categoryCollapsed = {},  -- map: [categoryName] = true if collapsed
+    }
+}
+
+local function DeepCopy(src)
+    if type(src) ~= "table" then return src end
+    local t = {}
+    for k, v in pairs(src) do
+        t[k] = DeepCopy(v)
+    end
+    return t
+end
+
+local function MergeDefaults(dst, defaults)
+    if type(dst) ~= "table" then dst = {} end
+    for k, v in pairs(defaults) do
+        if dst[k] == nil then
+            dst[k] = DeepCopy(v)
+        elseif type(v) == "table" then
+            dst[k] = MergeDefaults(dst[k], v)
         end
     end
+    return dst
+end
 
-    x, y = tonumber(x), tonumber(y)
-    if not x or not y then return nil, nil end
+local function NormalizeCategoryName(cat)
+    cat = Trim(cat or "")
+    if cat == "" then return "" end
+    return cat
+end
 
-    -- We treat values > 1 as "percent" style 0-100 coordinates
+function Jotter:GetTodoCategory(todo)
+    local cat = NormalizeCategoryName(todo and todo.category or "")
+    if cat == "" then
+        return "Uncategorized"
+    end
+    return cat
+end
+
+function Jotter:EnsureCategoryInOrder(categoryName)
+    local settings = self.db and self.db.settings
+    if not settings then return end
+
+    categoryName = Trim(categoryName or "")
+    if categoryName == "" then
+        categoryName = "Uncategorized"
+    end
+
+    settings.categoryOrder = settings.categoryOrder or {}
+    for _, existing in ipairs(settings.categoryOrder) do
+        if existing == categoryName then
+            return
+        end
+    end
+    table.insert(settings.categoryOrder, categoryName)
+end
+
+local function InitDB()
+    JotterDB = JotterDB or {}
+    JotterDB = MergeDefaults(JotterDB, DEFAULTS)
+
+    -- Migrate/normalize each todo
+    for _, todo in ipairs(JotterDB.todos) do
+        if todo.zone == nil then todo.zone = "" end
+        if todo.description == nil then todo.description = "" end
+        if todo.done == nil then todo.done = false end
+        if todo.text == nil then todo.text = "" end
+        if todo.coords == nil then todo.coords = "" end
+        if todo.category == nil then todo.category = "" end -- Feature 3
+    end
+
+    -- Ensure "Uncategorized" is always part of ordering once we see any categories
+    JotterDB.settings.categoryOrder = JotterDB.settings.categoryOrder or {}
+    JotterDB.settings.categoryCollapsed = JotterDB.settings.categoryCollapsed or {}
+
+    Jotter.db = JotterDB
+end
+
+--------------------------------------------------------------
+-- Coordinates parsing + waypoint support
+--------------------------------------------------------------
+local function Jotter_ParseCoordsString(coordsStr)
+    coordsStr = Trim(coordsStr or "")
+    if coordsStr == "" then return nil end
+
+    -- Accept: "12.3, 45.6" or "12.3 45.6" or "12 45"
+    local a, b = coordsStr:match("^(%d+%.?%d*)%s*[, ]%s*(%d+%.?%d*)$")
+    if not a or not b then return nil end
+
+    local x = tonumber(a)
+    local y = tonumber(b)
+    if not x or not y then return nil end
     return x, y
 end
 
 function Jotter:CreateWaypointForTodo(todo)
     if not todo then return end
-
     local coordsStr = Trim(todo.coords or "")
     if coordsStr == "" then return end
 
@@ -73,41 +167,24 @@ function Jotter:CreateWaypointForTodo(todo)
     local zoneName    = Trim(todo.zone or "")
     local currentZone = self.currentZone or GetCurrentZoneName()
 
-    -- For now, only set waypoints in the current zone
+    -- Current implementation only supports the current zone (simple + reliable).
     if zoneName ~= "" and zoneName ~= currentZone then
         print("|cff00ff99Jotter:|r Waypoints are currently only supported in your current zone: " .. currentZone)
         return
     end
 
-    if not C_Map or not C_Map.GetBestMapForUnit then
-        print("|cff00ff99Jotter:|r Map APIs are not available.")
-        return
-    end
-
     local uiMapID = C_Map.GetBestMapForUnit("player")
     if not uiMapID then
-        print("|cff00ff99Jotter:|r Unable to determine current map for waypoint.")
+        print("|cff00ff99Jotter:|r Could not determine current map.")
         return
     end
 
-    if C_Map.CanSetUserWaypoint and not C_Map.CanSetUserWaypointOnMap(uiMapID) then
-        print("|cff00ff99Jotter:|r Waypoints are not supported on this map.")
-        return
-    end
-
-    if not C_Map.SetUserWaypoint or not C_SuperTrack or not C_SuperTrack.SetSuperTrackedUserWaypoint then
-        print("|cff00ff99Jotter:|r Waypoint APIs are not available in this client.")
-        return
-    end
-
-    -- Convert 0-100 style coords into 0-1 map coords if needed
-    local mapX, mapY = x, y
-    if x > 1 or y > 1 then
-        if x > 100 then x = 100 end
-        if y > 100 then y = 100 end
-        mapX = x / 100.0
-        mapY = y / 100.0
-    end
+    local mapX = x / 100.0
+    local mapY = y / 100.0
+    if mapX < 0 then mapX = 0 end
+    if mapY < 0 then mapY = 0 end
+    if mapX > 1 then mapX = 1 end
+    if mapY > 1 then mapY = 1 end
 
     local point = UiMapPoint and UiMapPoint.CreateFromCoordinates and UiMapPoint.CreateFromCoordinates(uiMapID, mapX, mapY)
     if not point then
@@ -117,63 +194,48 @@ function Jotter:CreateWaypointForTodo(todo)
 
     C_Map.SetUserWaypoint(point)
     C_SuperTrack.SetSuperTrackedUserWaypoint(true)
-
-    print(string.format("|cff00ff99Jotter:|r Waypoint set to %.1f, %.1f in %s.", x, y, currentZone))
 end
 
-
 --------------------------------------------------------------
--- Saved variables init
+-- Main UI visibility helpers
 --------------------------------------------------------------
-local function InitDB()
-    JotterDB = JotterDB or {}
-    local db = JotterDB
+Jotter._combatHidden = false
+Jotter._wasVisibleBeforeCombat = false
+Jotter._userHidden = false -- set when user explicitly hides/closes main UI
 
-    db.todos = db.todos or {
-        {
-            text        = "Welcome to Jotter. Type a todo and press Enter.",
-            done        = false,
-            zone        = "",
-            description = "",
-            coords      = "",   -- NEW
-        },
-    }
+function Jotter:SetMainVisible(visible, reason)
+    if not self.mainFrame then return end
+    visible = Bool(visible)
 
-    db.framePos = db.framePos or { point = "CENTER", x = 0, y = 0 }
-
-    db.settings = db.settings or {}
-    if db.settings.useCurrentZoneByDefault == nil then
-        db.settings.useCurrentZoneByDefault = false
-    end
-    if db.settings.hideCompletedOnMain == nil then
-        db.settings.hideCompletedOnMain = false
+    -- Track explicit user intent so we don't "pop" the window back unexpectedly.
+    if reason == "user" then
+        self._userHidden = not visible
     end
 
-    for _, todo in ipairs(db.todos) do
-        if todo.zone == nil then todo.zone = "" end
-        if todo.description == nil then todo.description = "" end
-        if todo.done == nil then todo.done = false end
-        if todo.text == nil then todo.text = "" end
-        if todo.coords == nil then todo.coords = "" end   -- NEW
+    if visible then
+        self.mainFrame:Show()
+    else
+        self.mainFrame:Hide()
     end
-
-    Jotter.db = db
 end
 
+function Jotter:IsMainVisible()
+    return self.mainFrame and self.mainFrame:IsShown()
+end
 
 --------------------------------------------------------------
--- Zone update used by the main UI
+-- Zone update (used by the main UI)
 --------------------------------------------------------------
 function Jotter:UpdateZone()
     self.currentZone = GetCurrentZoneName()
     if self.zoneText then
-        if self.currentZone and self.currentZone ~= "" then
-            self.zoneText:SetText(self.currentZone)
-        else
-            self.zoneText:SetText("")
-        end
+        self.zoneText:SetText(self.currentZone or "")
     end
-    self:RefreshList()
+
+    -- Refresh list to reflect current zone, but do NOT auto-hide if empty.
+    if self.RefreshList then
+        self:RefreshList()
+    end
 end
 
 --------------------------------------------------------------
@@ -185,8 +247,11 @@ function Jotter:OnEvent(event, ...)
         if name ~= addonName then return end
 
         InitDB()
+
         self:CreateMainFrame()
         self:CreateEditorFrame()
+        self:CreateConfigFrame()
+
         self:UpdateZone()
 
     elseif event == "PLAYER_ENTERING_WORLD"
@@ -194,6 +259,28 @@ function Jotter:OnEvent(event, ...)
         or event == "ZONE_CHANGED_NEW_AREA" then
 
         self:UpdateZone()
+
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        -- Feature 2: Hide while in combat (respect prior user intent)
+        if self.db and self.db.settings and self.db.settings.hideInCombat and self.mainFrame then
+            self._wasVisibleBeforeCombat = self:IsMainVisible() and (not self._userHidden)
+            if self._wasVisibleBeforeCombat then
+                self._combatHidden = true
+                self:SetMainVisible(false, "combat")
+            end
+        end
+
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        if self._combatHidden then
+            self._combatHidden = false
+            if self.db and self.db.settings and self.db.settings.hideInCombat then
+                -- Only restore if it was visible prior to combat AND user didn't explicitly hide it.
+                if self._wasVisibleBeforeCombat and (not self._userHidden) then
+                    self:SetMainVisible(true, "combat")
+                end
+            end
+            self._wasVisibleBeforeCombat = false
+        end
     end
 end
 
@@ -207,22 +294,28 @@ function Jotter:Init()
     self.frame:RegisterEvent("PLAYER_ENTERING_WORLD")
     self.frame:RegisterEvent("ZONE_CHANGED")
     self.frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+
+    -- Feature 2
+    self.frame:RegisterEvent("PLAYER_REGEN_DISABLED")
+    self.frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 end
 
 --------------------------------------------------------------
--- Slash command
+-- Slash commands
 --------------------------------------------------------------
 SLASH_JOTTER1 = "/jotter"
 SlashCmdList["JOTTER"] = function(msg)
     msg = Trim(msg or "")
     if msg == "editor" or msg == "edit" then
         Jotter:ToggleEditor()
+    elseif msg == "config" or msg == "options" then
+        Jotter:ToggleConfig()
     elseif msg == "show" then
-        if Jotter.mainFrame then Jotter.mainFrame:Show() end
+        Jotter:SetMainVisible(true, "user")
     elseif msg == "hide" then
-        if Jotter.mainFrame then Jotter.mainFrame:Hide() end
+        Jotter:SetMainVisible(false, "user")
     else
-        print("|cff00ff99Jotter:|r /jotter show, /jotter hide, /jotter editor")
+        print("|cff00ff99Jotter:|r /jotter show, /jotter hide, /jotter editor, /jotter config")
     end
 end
 
