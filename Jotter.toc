@@ -1,8 +1,10 @@
-## Interface: 110000
+## Interface: 110207
 ## Title: Jotter
-## Notes: Simple on screen todo list with zone aware entries.
-## Author: Dennis Kurlinski & Sage
-## Version: 0.3.1
+## Notes: A lightweight, context-aware note list for World of Warcraft
+## Version: 11.2.7
+## Author: Edag
+## X-Website: https://github.com/thepcg/Jotter
+## X-License: MIT
 ## SavedVariables: JotterDB
 
 Jotter_Core.lua

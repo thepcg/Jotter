@@ -1,3 +1,30 @@
+--[[
+Jotter
+Repository: https://github.com/thepcg/Jotter
+Author: Edag
+License: MIT
+
+Copyright (c) 2025 Edag
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+]]
+
 local addonName, Jotter = ...
 local Trim = Jotter.Trim
 local GetCurrentZoneName = Jotter.GetCurrentZoneName
@@ -18,18 +45,28 @@ local function ApplyMainLockState()
     local locked = Jotter.db.settings.lockMainWindow and true or false
     f._locked = locked
 
+    -- Update lock button icon
+    if f._lockBtn and f._lockBtn._tex then
+        if locked then
+            f._lockBtn._tex:SetTexture("Interface\\AddOns\\Jotter\\Textures\\lock_locked.tga")
+        else
+            f._lockBtn._tex:SetTexture("Interface\\AddOns\\Jotter\\Textures\\lock_unlocked.tga")
+        end
+    end
+
+    -- Locking should prevent moving/resizing, but the UI must remain interactive
+    -- (checkboxes, click-to-edit, tooltips, etc.). So we do NOT disable mouse input
+    -- on the frame. We only disable drag + sizing affordances.
+    f:EnableMouse(true)
+
     if locked then
-        f:EnableMouse(false)
         f:SetMovable(false)
-        f:RegisterForDrag()
+        f:RegisterForDrag() -- clears drag registration
         if f._resizeGrip then f._resizeGrip:Hide() end
-        if f._lockHint then f._lockHint:Show() end
     else
-        f:EnableMouse(true)
         f:SetMovable(true)
         f:RegisterForDrag("LeftButton")
         if f._resizeGrip then f._resizeGrip:Show() end
-        if f._lockHint then f._lockHint:Hide() end
     end
 end
 
@@ -62,10 +99,10 @@ local function RestoreMainFramePositionAndSize()
     f:SetPoint(s.point or "CENTER", UIParent, s.relativePoint or "CENTER", s.x or 0, s.y or 0)
 end
 
-local function EnsureCategoryOrderForVisibleTodos(todos)
+local function EnsureCategoryOrderForVisibleNotes(notes)
     if not Jotter.db or not Jotter.db.settings then return end
-    for _, todo in ipairs(todos) do
-        local cat = Jotter:GetTodoCategory(todo)
+    for _, note in ipairs(notes) do
+        local cat = Jotter:GetNoteCategory(note)
         Jotter:EnsureCategoryInOrder(cat)
     end
 end
@@ -75,7 +112,7 @@ local function BuildGroupsForZone(zoneName)
     if not settings then return {}, {} end
 
     local hideCompleted = settings.hideCompletedOnMain and true or false
-    local todos = Jotter.db.todos or {}
+    local notes = Jotter.db.notes or {}
 
     local groups = {}          -- map categoryName -> { indices = {...} }
     local categorySeen = {}    -- set
@@ -83,11 +120,11 @@ local function BuildGroupsForZone(zoneName)
 
     zoneName = Trim(zoneName or "")
 
-    for i, todo in ipairs(todos) do
-        local todoZone = Trim(todo.zone or "")
-        if todoZone == zoneName then
-            if (not hideCompleted) or (not todo.done) then
-                local cat = Jotter:GetTodoCategory(todo)
+    for i, note in ipairs(notes) do
+        local noteZone = Trim(note.zone or "")
+        if noteZone == zoneName then
+            if (not hideCompleted) or (not note.done) then
+                local cat = Jotter:GetNoteCategory(note)
                 if cat ~= "Uncategorized" then anyCategorized = true end
                 groups[cat] = groups[cat] or { indices = {} }
                 table.insert(groups[cat].indices, i)
@@ -103,13 +140,13 @@ local function BuildGroupsForZone(zoneName)
     end
 
     -- Make sure ordering includes any new categories
-    local visibleTodos = {}
+    local visibleNotes = {}
     for cat, g in pairs(groups) do
         for _, idx in ipairs(g.indices) do
-            table.insert(visibleTodos, todos[idx])
+            table.insert(visibleNotes, notes[idx])
         end
     end
-    EnsureCategoryOrderForVisibleTodos(visibleTodos)
+    EnsureCategoryOrderForVisibleNotes(visibleNotes)
 
     -- Build ordered list
     local orderedCategories = {}
@@ -123,8 +160,15 @@ local function BuildGroupsForZone(zoneName)
         end
     end
     -- Any remaining categories not in ordering yet (should be rare) go to the end
-    for cat, _ in pairs(categorySeen) do
-        table.insert(orderedCategories, cat)
+    do
+        local remaining = {}
+        for cat, _ in pairs(categorySeen) do
+            table.insert(remaining, cat)
+        end
+        table.sort(remaining)
+        for _, cat in ipairs(remaining) do
+            table.insert(orderedCategories, cat)
+        end
     end
 
     -- Keep Uncategorized last by default if present and not explicitly ordered
@@ -214,30 +258,30 @@ local function AcquireRow()
         row.text = fs
 
         row:SetScript("OnEnter", function(selfRow)
-            local idx = selfRow.todoIndex
+            local idx = selfRow.noteIndex
             if not idx then return end
-            local todo = Jotter.db.todos[idx]
-            if not todo then return end
+            local note = Jotter.db.notes[idx]
+            if not note then return end
 
             GameTooltip:SetOwner(selfRow, "ANCHOR_RIGHT")
-            GameTooltip:SetText(todo.text or "", 1, 1, 1)
+            GameTooltip:SetText(note.text or "", 1, 1, 1)
 
-            local cat = Trim(todo.category or "")
+            local cat = Trim(note.category or "")
             if cat ~= "" then
                 GameTooltip:AddLine("Category: " .. cat, 0.9, 0.9, 0.9)
             end
 
-            local desc = Trim(todo.description or "")
+            local desc = Trim(note.description or "")
             if desc ~= "" then
                 GameTooltip:AddLine(desc, 0.9, 0.9, 0.9, true)
             end
 
-            local coords = Trim(todo.coords or "")
+            local coords = Trim(note.coords or "")
             if coords ~= "" then
-                GameTooltip:AddLine("Coords: " .. coords .. " (click todo to set waypoint)", 0.7, 0.9, 1.0)
+                GameTooltip:AddLine("Coords: " .. coords .. " (click note to set waypoint)", 0.7, 0.9, 1.0)
             end
 
-            GameTooltip:AddLine("Right click + Shift: /say description", 0.8, 0.8, 0.8)
+            GameTooltip:AddLine("Right click + Shift: /say (or run /commands)", 0.8, 0.8, 0.8)
             GameTooltip:Show()
         end)
 
@@ -246,40 +290,65 @@ local function AcquireRow()
         end)
 
         row:SetScript("OnMouseUp", function(selfRow, button)
-            local index = selfRow.todoIndex
+            local index = selfRow.noteIndex
             if not index then return end
-            local todo = Jotter.db.todos[index]
-            if not todo then return end
+            local note = Jotter.db.notes[index]
+            if not note then return end
 
             if button == "LeftButton" then
                 -- Primary UX:
                 -- If coords exist, create a waypoint.
                 -- Otherwise open the editor for fast edits.
-                if Trim(todo.coords or "") ~= "" then
-                    Jotter:CreateWaypointForTodo(todo)
+                if Trim(note.coords or "") ~= "" then
+                    Jotter:CreateWaypointForNote(note)
                 else
-                    Jotter.selectedTodoIndex = index
+                    Jotter.selectedNoteIndex = index
                     Jotter:ToggleEditor(true)
                 end
             elseif button == "RightButton" and IsShiftKeyDown() then
-                local desc = Trim(todo.description or "")
-                local sayText = desc ~= "" and desc or (todo.text or "")
+                local desc = Trim(note.description or "")
+                local sayText = desc ~= "" and desc or (note.text or "")
                 sayText = Trim(sayText)
                 if sayText ~= "" then
-                    SendChatMessage(sayText, "SAY")
+                    -- If the note starts with a slash, treat it like a chat command.
+                    -- Example: /me points at %t
+                    if sayText:sub(1, 1) == "/" and ChatFrame_OpenChat then
+                        ChatFrame_OpenChat(sayText)
+                        if ChatEdit_GetActiveWindow then
+                            local editBox = ChatEdit_GetActiveWindow()
+                            if editBox and editBox.SetText then
+                                -- Ensure the edit box contains the slash command, then parse and send it.
+                                editBox:SetText(sayText)
+                                if ChatEdit_ParseText then
+                                    ChatEdit_ParseText(editBox, 0)
+                                end
+                                if ChatEdit_SendText then
+                                    ChatEdit_SendText(editBox, 0)
+                                end
+                                if ChatEdit_DeactivateChat then
+                                    ChatEdit_DeactivateChat(editBox)
+                                end
+                            end
+                        end
+                    else
+                        SendChatMessage(sayText, "SAY")
+                    end
                 end
             end
         end)
 
         cb:SetScript("OnClick", function(selfBtn)
             local parentRow = selfBtn:GetParent()
-            local index = parentRow.todoIndex
+            local index = parentRow.noteIndex
             if not index then return end
-            local todo = Jotter.db.todos[index]
-            if todo then
-                todo.done = selfBtn:GetChecked() and true or false
+            local note = Jotter.db.notes[index]
+            if note then
+                note.done = selfBtn:GetChecked() and true or false
                 Jotter:RefreshList()
-                Jotter:RefreshEditor()
+                -- Only refresh the editor if it's currently visible.
+                if Jotter.editorFrame and Jotter.editorFrame:IsShown() then
+                    Jotter:RefreshEditor()
+                end
             end
         end)
     end
@@ -340,25 +409,53 @@ function Jotter:CreateMainFrame()
     title:SetText("Jotter")
 
     -- Zone text (right side)
+    -- This will be re-anchored after the Close button and lock hint are created,
+    -- so it never overlaps the lock indicator.
     local zoneText = titleBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     zoneText:SetPoint("RIGHT", -24, 0)
     zoneText:SetJustifyH("RIGHT")
     zoneText:SetText("")
     self.zoneText = zoneText
 
-    -- Close button (explicit user hide)
-    local close = CreateFrame("Button", nil, titleBar, "UIPanelCloseButton")
-    close:SetPoint("RIGHT", -2, 0)
-    close:SetScript("OnClick", function()
-        Jotter:SetMainVisible(false, "user")
+    -- Lock/Unlock button (replaces close button; minimap toggles visibility)
+    local lockBtn = CreateFrame("Button", nil, titleBar)
+    lockBtn:SetSize(18, 18)
+    lockBtn:SetPoint("RIGHT", -4, 0)
+
+    local lockTex = lockBtn:CreateTexture(nil, "ARTWORK")
+    lockTex:SetAllPoints(lockBtn)
+    lockBtn._tex = lockTex
+
+    -- Zone text anchors between the title and the lock button.
+    -- This prevents overlap and keeps the zone left-aligned.
+    zoneText:ClearAllPoints()
+    zoneText:SetPoint("LEFT", title, "RIGHT", 10, 0)
+    zoneText:SetPoint("RIGHT", lockBtn, "LEFT", -8, 0)
+    zoneText:SetJustifyH("LEFT")
+
+
+    -- Keep a handle for state updates
+    f._lockBtn = lockBtn
+
+    lockBtn:SetScript("OnClick", function()
+        if not Jotter.db or not Jotter.db.settings then return end
+        Jotter.db.settings.lockMainWindow = not (Jotter.db.settings.lockMainWindow and true or false)
+        ApplyMainLockState()
+        SaveMainFramePositionAndSize()
     end)
 
-    -- Lock hint (shown when locked)
-    local lockHint = titleBar:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    lockHint:SetPoint("RIGHT", close, "LEFT", -6, 0)
-    lockHint:SetText("Locked")
-    lockHint:Hide()
-    f._lockHint = lockHint
+    lockBtn:SetScript("OnEnter", function(selfBtn)
+        GameTooltip:SetOwner(selfBtn, "ANCHOR_TOPRIGHT")
+        if f._locked then
+            GameTooltip:SetText("Unlock window")
+        else
+            GameTooltip:SetText("Lock window")
+        end
+        GameTooltip:Show()
+    end)
+    lockBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
 
     -- Dragging
     f:EnableMouse(true)
@@ -396,29 +493,29 @@ function Jotter:CreateMainFrame()
     input:SetHeight(20)
     input:SetPoint("TOPLEFT", 10, -30)
     input:SetPoint("TOPRIGHT", -10, -30)
-    input:SetText("Type a todo and press Enter")
+    input:SetText("Type a note and press Enter")
 
     input:SetScript("OnEditFocusGained", function(selfEdit)
-        if selfEdit:GetText() == "Type a todo and press Enter" then
+        if selfEdit:GetText() == "Type a note and press Enter" then
             selfEdit:SetText("")
         end
     end)
     input:SetScript("OnEditFocusLost", function(selfEdit)
         if Trim(selfEdit:GetText()) == "" then
-            selfEdit:SetText("Type a todo and press Enter")
+            selfEdit:SetText("Type a note and press Enter")
         end
     end)
 
     input:SetScript("OnEnterPressed", function(selfEdit)
         local text = Trim(selfEdit:GetText() or "")
-        if text ~= "" and text ~= "Type a todo and press Enter" then
+        if text ~= "" and text ~= "Type a note and press Enter" then
             local zone = ""
             if Jotter.db.settings and Jotter.db.settings.useCurrentZoneByDefault then
                 zone = Jotter.currentZone or GetCurrentZoneName()
             end
 
             -- Insert at top (global ordering remains stable across reloads)
-            table.insert(Jotter.db.todos, 1, {
+            table.insert(Jotter.db.notes, 1, {
                 text = text,
                 done = false,
                 zone = zone,
@@ -431,7 +528,9 @@ function Jotter:CreateMainFrame()
             Jotter:EnsureCategoryInOrder("Uncategorized")
 
             Jotter:RefreshList()
-            Jotter:RefreshEditor()
+            if Jotter.editorFrame and Jotter.editorFrame:IsShown() then
+                Jotter:RefreshEditor()
+            end
         end
         selfEdit:SetText("")
         selfEdit:SetFocus()
@@ -456,12 +555,12 @@ function Jotter:CreateMainFrame()
         content:SetWidth(width)
     end)
 
-    -- Empty state label (Feature 1)
+    -- Empty state label
     local empty = content:CreateFontString(nil, "OVERLAY", "GameFontDisable")
     empty:SetPoint("TOPLEFT", 4, -4)
     empty:SetPoint("RIGHT", -4, 0)
     empty:SetJustifyH("LEFT")
-    empty:SetText("No todos for this zone.")
+    empty:SetText("No notes for this zone.")
     empty:Hide()
     self.emptyLabel = empty
 
@@ -491,7 +590,7 @@ function Jotter:RefreshList()
     ReleaseAllWidgets()
 
     local groups, meta = BuildGroupsForZone(zone)
-    local anyTodos = false
+    local anyNotes = false
 
     local yOffset = -2
     local anchorTo = self.listContent
@@ -506,17 +605,17 @@ function Jotter:RefreshList()
     if meta.__noCategories then
         -- Flat list (no category headers)
         local indices = (groups["Uncategorized"] and groups["Uncategorized"].indices) or {}
-        for _, todoIndex in ipairs(indices) do
-            anyTodos = true
-            local todo = self.db.todos[todoIndex]
+        for _, noteIndex in ipairs(indices) do
+            anyNotes = true
+            local note = self.db.notes[noteIndex]
             local row = AcquireRow()
             AnchorNext(row, self.rowHeightMain + self.rowGapMain)
 
-            row.todoIndex = todoIndex
-            row.check:SetChecked(todo.done and true or false)
+            row.noteIndex = noteIndex
+            row.check:SetChecked(note.done and true or false)
 
-            local text = todo.text or ""
-            if todo.done then
+            local text = note.text or ""
+            if note.done then
                 row.text:SetText("|cff888888" .. text .. "|r")
             else
                 row.text:SetText(text)
@@ -527,7 +626,7 @@ function Jotter:RefreshList()
         for _, cat in ipairs(ordered) do
             local g = groups[cat]
             if g and g.indices and #g.indices > 0 then
-                anyTodos = true
+                anyNotes = true
 
                 local header = AcquireHeader()
                 header.categoryName = cat
@@ -544,16 +643,16 @@ function Jotter:RefreshList()
                 AnchorNext(header, 20 + 2)
 
                 if not collapsed then
-                    for _, todoIndex in ipairs(g.indices) do
-                        local todo = self.db.todos[todoIndex]
+                    for _, noteIndex in ipairs(g.indices) do
+                        local note = self.db.notes[noteIndex]
                         local row = AcquireRow()
                         AnchorNext(row, self.rowHeightMain + self.rowGapMain)
 
-                        row.todoIndex = todoIndex
-                        row.check:SetChecked(todo.done and true or false)
+                        row.noteIndex = noteIndex
+                        row.check:SetChecked(note.done and true or false)
 
-                        local text = todo.text or ""
-                        if todo.done then
+                        local text = note.text or ""
+                        if note.done then
                             row.text:SetText("|cff888888" .. text .. "|r")
                         else
                             row.text:SetText(text)
@@ -569,10 +668,10 @@ function Jotter:RefreshList()
     if contentHeight < 1 then contentHeight = 1 end
     self.listContent:SetHeight(contentHeight)
 
-    -- Feature 1: do not auto-hide when empty. Show an empty state instead.
-    if not anyTodos then
+    -- do not auto-hide when empty. Show an empty state instead.
+    if not anyNotes then
         self.emptyLabel:Show()
-        self.emptyLabel:SetText("No todos for this zone.")
+        self.emptyLabel:SetText("No notes for this zone.")
     else
         self.emptyLabel:Hide()
     end

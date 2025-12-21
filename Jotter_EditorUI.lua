@@ -1,3 +1,30 @@
+--[[
+Jotter
+Repository: https://github.com/thepcg/Jotter
+Author: Edag
+License: MIT
+
+Copyright (c) 2025 Edag
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+]]
+
 local addonName, Jotter = ...
 local Trim = Jotter.Trim
 local GetCurrentZoneName = Jotter.GetCurrentZoneName
@@ -5,15 +32,15 @@ local GetCurrentZoneName = Jotter.GetCurrentZoneName
 Jotter.editorRows = Jotter.editorRows or {}
 
 --------------------------------------------------------------
--- Shared: build category list from current todos
+-- Shared: build category list from current notes
 --------------------------------------------------------------
 local function GetAllCategoryNames()
     local seen = {}
     local list = {}
 
-    local todos = (Jotter.db and Jotter.db.todos) or {}
-    for _, todo in ipairs(todos) do
-        local cat = Trim(todo.category or "")
+    local notes = (Jotter.db and Jotter.db.notes) or {}
+    for _, note in ipairs(notes) do
+        local cat = Trim(note.category or "")
         if cat ~= "" and not seen[cat] then
             seen[cat] = true
             table.insert(list, cat)
@@ -24,7 +51,42 @@ local function GetAllCategoryNames()
 end
 
 --------------------------------------------------------------
--- Editor window (todos + details)
+-- Persistence helpers
+--------------------------------------------------------------
+local function SaveFrameState(frame, settingsKey)
+    if not frame or not Jotter.db or not Jotter.db.settings then return end
+    local s = Jotter.db.settings[settingsKey]
+    if type(s) ~= "table" then
+        s = {}
+        Jotter.db.settings[settingsKey] = s
+    end
+
+    local point, _, relativePoint, x, y = frame:GetPoint(1)
+    s.point = point or "CENTER"
+    s.relativePoint = relativePoint or "CENTER"
+    s.x = x or 0
+    s.y = y or 0
+    s.width = frame:GetWidth()
+    s.height = frame:GetHeight()
+end
+
+local function ApplyFrameState(frame, settingsKey, defaultW, defaultH)
+    if not frame then return end
+    local s = (Jotter.db and Jotter.db.settings and Jotter.db.settings[settingsKey]) or nil
+    local w = (s and s.width) or defaultW
+    local h = (s and s.height) or defaultH
+    frame:SetSize(w, h)
+
+    frame:ClearAllPoints()
+    if s and s.point and s.relativePoint then
+        frame:SetPoint(s.point, UIParent, s.relativePoint, s.x or 0, s.y or 0)
+    else
+        frame:SetPoint("CENTER")
+    end
+end
+
+--------------------------------------------------------------
+-- Editor window (notes + details)
 --------------------------------------------------------------
 function Jotter:CreateEditorFrame()
     if self.editorFrame then return end
@@ -32,8 +94,7 @@ function Jotter:CreateEditorFrame()
     local f = CreateFrame("Frame", "JotterEditorFrame", UIParent, "BackdropTemplate")
     self.editorFrame = f
 
-    f:SetSize(740, 460)
-    f:SetPoint("CENTER")
+    ApplyFrameState(f, "editorFrame", 740, 460)
     f:SetClampedToScreen(true)
 
     f:SetBackdrop({
@@ -48,7 +109,13 @@ function Jotter:CreateEditorFrame()
     f:RegisterForDrag("LeftButton")
     f:SetMovable(true)
     f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetScript("OnDragStop", function(selfFrame)
+        selfFrame:StopMovingOrSizing()
+        SaveFrameState(selfFrame, "editorFrame")
+    end)
+
+    -- Do not auto-open this window on UI reload.
+    f:Hide()
 
     -- Header
     local icon = f:CreateTexture(nil, "ARTWORK")
@@ -58,10 +125,26 @@ function Jotter:CreateEditorFrame()
 
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("LEFT", icon, "RIGHT", 8, 0)
-    title:SetText("Jotter - Todo Editor")
+    title:SetText("Jotter - Note Editor")
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -2, -2)
+
+    close:SetScript("OnClick", function()
+        f:Hide()
+        if Jotter.db and Jotter.db.settings then
+            Jotter.db.settings.configVisible = false
+        end
+        SaveFrameState(f, "configFrame")
+    end)
+
+    close:SetScript("OnClick", function()
+        f:Hide()
+        if Jotter.db and Jotter.db.settings then
+            Jotter.db.settings.editorVisible = false
+        end
+        SaveFrameState(f, "editorFrame")
+    end)
 
     -- Left column container
     local left = CreateFrame("Frame", nil, f)
@@ -71,7 +154,7 @@ function Jotter:CreateEditorFrame()
 
     local leftTitle = left:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     leftTitle:SetPoint("TOPLEFT", 0, 0)
-    leftTitle:SetText("Todos")
+    leftTitle:SetText("Notes")
 
     local listBorder = CreateFrame("Frame", nil, left, "BackdropTemplate")
     listBorder:SetPoint("TOPLEFT", 0, -18)
@@ -141,9 +224,9 @@ function Jotter:CreateEditorFrame()
         row.text = fs
 
         textBtn:SetScript("OnClick", function()
-            local idx = row.todoIndex
+            local idx = row.noteIndex
             if not idx then return end
-            Jotter.selectedTodoIndex = idx
+            Jotter.selectedNoteIndex = idx
             Jotter:RefreshEditor()
         end)
 
@@ -163,25 +246,25 @@ function Jotter:CreateEditorFrame()
         del:SetText("Del")
 
         up:SetScript("OnClick", function()
-            local index = row.todoIndex
+            local index = row.noteIndex
             if not index then return end
-            Jotter:MoveTodoWithinCategory(index, -1)
+            Jotter:MoveNoteWithinCategory(index, -1)
         end)
 
         down:SetScript("OnClick", function()
-            local index = row.todoIndex
+            local index = row.noteIndex
             if not index then return end
-            Jotter:MoveTodoWithinCategory(index, 1)
+            Jotter:MoveNoteWithinCategory(index, 1)
         end)
 
         del:SetScript("OnClick", function()
-            local index = row.todoIndex
+            local index = row.noteIndex
             if not index then return end
-            table.remove(Jotter.db.todos, index)
-            if Jotter.selectedTodoIndex == index then
-                Jotter.selectedTodoIndex = nil
-            elseif Jotter.selectedTodoIndex and Jotter.selectedTodoIndex > index then
-                Jotter.selectedTodoIndex = Jotter.selectedTodoIndex - 1
+            table.remove(Jotter.db.notes, index)
+            if Jotter.selectedNoteIndex == index then
+                Jotter.selectedNoteIndex = nil
+            elseif Jotter.selectedNoteIndex and Jotter.selectedNoteIndex > index then
+                Jotter.selectedNoteIndex = Jotter.selectedNoteIndex - 1
             end
             Jotter:RefreshList()
             Jotter:RefreshEditor()
@@ -237,7 +320,7 @@ function Jotter:CreateEditorFrame()
     end
 
     -- Text (read-only label, edited in list)
-    local selectedTextLabel = AddLabel("Selected todo")
+    local selectedTextLabel = AddLabel("Selected note")
     local selectedTextValue = detailBox:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     selectedTextValue:SetPoint("TOPLEFT", padX, y)
     selectedTextValue:SetPoint("RIGHT", -padX, 0)
@@ -256,7 +339,7 @@ function Jotter:CreateEditorFrame()
     local coordEdit = AddEditBox(220)
     self.detailCoordsEdit = coordEdit
 
-    -- Feature 3: Category
+    -- Category
     AddLabel("Category (optional)")
     local catEdit = AddEditBox(220)
     self.detailCategoryEdit = catEdit
@@ -278,14 +361,14 @@ function Jotter:CreateEditorFrame()
         table.insert(menu, { text = "(Clear)", notCheckable = true, func = function()
             catEdit:SetText("")
             catEdit:ClearFocus()
-            Jotter:SaveSelectedTodoField("category", "")
+            Jotter:SaveSelectedNoteField("category", "")
         end })
 
         for _, name in ipairs(categories) do
             table.insert(menu, { text = name, notCheckable = true, func = function()
                 catEdit:SetText(name)
                 catEdit:ClearFocus()
-                Jotter:SaveSelectedTodoField("category", name)
+                Jotter:SaveSelectedNoteField("category", name)
             end })
         end
 
@@ -358,10 +441,10 @@ function Jotter:CreateEditorFrame()
     ----------------------------------------------------------
     zoneEdit:SetScript("OnEnterPressed", function(selfEdit)
         selfEdit:ClearFocus()
-        Jotter:SaveSelectedTodoField("zone", selfEdit:GetText() or "")
+        Jotter:SaveSelectedNoteField("zone", selfEdit:GetText() or "")
     end)
     zoneEdit:SetScript("OnEditFocusLost", function(selfEdit)
-        Jotter:SaveSelectedTodoField("zone", selfEdit:GetText() or "")
+        Jotter:SaveSelectedNoteField("zone", selfEdit:GetText() or "")
     end)
 
     -- Coordinates: also auto-fill zone if blank (your previous behavior)
@@ -375,14 +458,14 @@ function Jotter:CreateEditorFrame()
 
     catEdit:SetScript("OnEnterPressed", function(selfEdit)
         selfEdit:ClearFocus()
-        Jotter:SaveSelectedTodoField("category", selfEdit:GetText() or "")
+        Jotter:SaveSelectedNoteField("category", selfEdit:GetText() or "")
     end)
     catEdit:SetScript("OnEditFocusLost", function(selfEdit)
-        Jotter:SaveSelectedTodoField("category", selfEdit:GetText() or "")
+        Jotter:SaveSelectedNoteField("category", selfEdit:GetText() or "")
     end)
 
     descEdit:SetScript("OnEditFocusLost", function(selfEdit)
-        Jotter:SaveSelectedTodoField("description", selfEdit:GetText() or "")
+        Jotter:SaveSelectedNoteField("description", selfEdit:GetText() or "")
     end)
 
     self:RefreshEditor()
@@ -391,21 +474,21 @@ end
 --------------------------------------------------------------
 -- Editor helpers
 --------------------------------------------------------------
-function Jotter:SaveSelectedTodoField(field, value)
-    if not self.selectedTodoIndex then return end
-    local todo = self.db and self.db.todos and self.db.todos[self.selectedTodoIndex]
-    if not todo then return end
+function Jotter:SaveSelectedNoteField(field, value)
+    if not self.selectedNoteIndex then return end
+    local note = self.db and self.db.notes and self.db.notes[self.selectedNoteIndex]
+    if not note then return end
 
     if field == "zone" then
-        todo.zone = Trim(value or "")
+        note.zone = Trim(value or "")
     elseif field == "coords" then
-        todo.coords = Trim(value or "")
+        note.coords = Trim(value or "")
     elseif field == "description" then
-        todo.description = value or ""
+        note.description = value or ""
     elseif field == "category" then
-        todo.category = Trim(value or "")
+        note.category = Trim(value or "")
         -- Keep category ordering stable once categories exist
-        local cat = self:GetTodoCategory(todo)
+        local cat = self:GetNoteCategory(note)
         self:EnsureCategoryInOrder(cat)
     end
 
@@ -416,20 +499,20 @@ end
 
 -- Keeps your existing "coords implies current zone if blank" behavior
 function Jotter:SaveCoordsAndAutoZone(value)
-    if not self.selectedTodoIndex then return end
-    local todo = self.db and self.db.todos and self.db.todos[self.selectedTodoIndex]
-    if not todo then return end
+    if not self.selectedNoteIndex then return end
+    local note = self.db and self.db.notes and self.db.notes[self.selectedNoteIndex]
+    if not note then return end
 
     value = Trim(value or "")
-    todo.coords = value
+    note.coords = value
 
     -- If we now have coords but no zone, assume the current zone
     if value ~= "" then
-        local z = Trim(todo.zone or "")
+        local z = Trim(note.zone or "")
         if z == "" then
-            todo.zone = self.currentZone or GetCurrentZoneName()
+            note.zone = self.currentZone or GetCurrentZoneName()
             if self.detailZoneEdit then
-                self.detailZoneEdit:SetText(todo.zone)
+                self.detailZoneEdit:SetText(note.zone)
             end
         end
     end
@@ -440,36 +523,36 @@ end
 
 -- Reorder within the same category and zone.
 -- This is a simpler first pass compared to full drag-and-drop.
-function Jotter:MoveTodoWithinCategory(todoIndex, direction)
-    local todos = self.db and self.db.todos
-    if not todos then return end
+function Jotter:MoveNoteWithinCategory(noteIndex, direction)
+    local notes = self.db and self.db.notes
+    if not notes then return end
 
-    local todo = todos[todoIndex]
-    if not todo then return end
+    local note = notes[noteIndex]
+    if not note then return end
 
-    local zone = Trim(todo.zone or "")
-    local cat = self:GetTodoCategory(todo)
+    local zone = Trim(note.zone or "")
+    local cat = self:GetNoteCategory(note)
 
     local function SameBucket(t)
         if not t then return false end
-        return Trim(t.zone or "") == zone and self:GetTodoCategory(t) == cat
+        return Trim(t.zone or "") == zone and self:GetNoteCategory(t) == cat
     end
 
     if direction < 0 then
-        for i = todoIndex - 1, 1, -1 do
-            if SameBucket(todos[i]) then
-                todos[todoIndex], todos[i] = todos[i], todos[todoIndex]
-                self.selectedTodoIndex = i
+        for i = noteIndex - 1, 1, -1 do
+            if SameBucket(notes[i]) then
+                notes[noteIndex], notes[i] = notes[i], notes[noteIndex]
+                self.selectedNoteIndex = i
                 self:RefreshList()
                 self:RefreshEditor()
                 return
             end
         end
     else
-        for i = todoIndex + 1, #todos do
-            if SameBucket(todos[i]) then
-                todos[todoIndex], todos[i] = todos[i], todos[todoIndex]
-                self.selectedTodoIndex = i
+        for i = noteIndex + 1, #notes do
+            if SameBucket(notes[i]) then
+                notes[noteIndex], notes[i] = notes[i], notes[noteIndex]
+                self.selectedNoteIndex = i
                 self:RefreshList()
                 self:RefreshEditor()
                 return
@@ -485,35 +568,35 @@ function Jotter:RefreshEditor()
     if not self.editorFrame or not self.db then return end
 
     local rows = self.editorRows
-    local todos = self.db.todos or {}
+    local notes = self.db.notes or {}
 
-    -- List: show all todos (not only current zone) for editing
+    -- List: show all notes (not only current zone) for editing
     local contentHeight = 0
     local shown = 0
 
     for i = 1, self.maxEditorRows do
         local row = rows[i]
-        local todo = todos[i]
-        if todo then
+        local note = notes[i]
+        if note then
             shown = shown + 1
-            row.todoIndex = i
+            row.noteIndex = i
             row:Show()
 
-            local text = todo.text or ""
-            local zone = Trim(todo.zone or "")
-            local cat = Trim(todo.category or "")
+            local text = note.text or ""
+            local zone = Trim(note.zone or "")
+            local cat = Trim(note.category or "")
 
             local suffix = ""
             if zone ~= "" then suffix = suffix .. "  |cff888888[" .. zone .. "]|r" end
             if cat ~= "" then suffix = suffix .. "  |cff99ccff{" .. cat .. "}|r" end
 
-            if todo.done then
+            if note.done then
                 row.text:SetText("|cff777777" .. text .. "|r" .. suffix)
             else
                 row.text:SetText(text .. suffix)
             end
 
-            if self.selectedTodoIndex == i then
+            if self.selectedNoteIndex == i then
                 row.highlight:Show()
             else
                 row.highlight:Hide()
@@ -521,7 +604,7 @@ function Jotter:RefreshEditor()
 
             contentHeight = contentHeight + 24 + 4
         else
-            row.todoIndex = nil
+            row.noteIndex = nil
             row:Hide()
             row.highlight:Hide()
         end
@@ -531,11 +614,11 @@ function Jotter:RefreshEditor()
     self.editorContent:SetHeight(contentHeight)
 
     -- Details panel
-    local idx = self.selectedTodoIndex
-    local todo = idx and todos[idx] or nil
+    local idx = self.selectedNoteIndex
+    local note = idx and notes[idx] or nil
 
-    if not todo then
-        if self.detailSelectedText then self.detailSelectedText:SetText("Select a todo from the list.") end
+    if not note then
+        if self.detailSelectedText then self.detailSelectedText:SetText("Select a note from the list.") end
         if self.detailZoneEdit then self.detailZoneEdit:SetText("") end
         if self.detailCoordsEdit then self.detailCoordsEdit:SetText("") end
         if self.detailCategoryEdit then self.detailCategoryEdit:SetText("") end
@@ -543,11 +626,11 @@ function Jotter:RefreshEditor()
         return
     end
 
-    if self.detailSelectedText then self.detailSelectedText:SetText(todo.text or "") end
-    if self.detailZoneEdit then self.detailZoneEdit:SetText(todo.zone or "") end
-    if self.detailCoordsEdit then self.detailCoordsEdit:SetText(todo.coords or "") end
-    if self.detailCategoryEdit then self.detailCategoryEdit:SetText(todo.category or "") end
-    if self.detailDescEdit then self.detailDescEdit:SetText(todo.description or "") end
+    if self.detailSelectedText then self.detailSelectedText:SetText(note.text or "") end
+    if self.detailZoneEdit then self.detailZoneEdit:SetText(note.zone or "") end
+    if self.detailCoordsEdit then self.detailCoordsEdit:SetText(note.coords or "") end
+    if self.detailCategoryEdit then self.detailCategoryEdit:SetText(note.category or "") end
+    if self.detailDescEdit then self.detailDescEdit:SetText(note.description or "") end
 end
 
 --------------------------------------------------------------
@@ -556,17 +639,25 @@ end
 function Jotter:ToggleEditor(forceShow)
     self:CreateEditorFrame()
 
+    local show = false
     if forceShow then
-        self.editorFrame:Show()
-        self:RefreshEditor()
-        return
+        show = true
+    else
+        show = not self.editorFrame:IsShown()
     end
 
-    if self.editorFrame:IsShown() then
-        self.editorFrame:Hide()
-    else
+    if show then
         self.editorFrame:Show()
+        if self.db and self.db.settings then
+            self.db.settings.editorVisible = true
+        end
         self:RefreshEditor()
+    else
+        self.editorFrame:Hide()
+        if self.db and self.db.settings then
+            self.db.settings.editorVisible = false
+        end
+        SaveFrameState(self.editorFrame, "editorFrame")
     end
 end
 
@@ -579,8 +670,7 @@ function Jotter:CreateConfigFrame()
     local f = CreateFrame("Frame", "JotterConfigFrame", UIParent, "BackdropTemplate")
     self.configFrame = f
 
-    f:SetSize(480, 520)
-    f:SetPoint("CENTER")
+    ApplyFrameState(f, "configFrame", 480, 520)
     f:SetClampedToScreen(true)
 
     f:SetBackdrop({
@@ -595,7 +685,13 @@ function Jotter:CreateConfigFrame()
     f:RegisterForDrag("LeftButton")
     f:SetMovable(true)
     f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetScript("OnDragStop", function(selfFrame)
+        selfFrame:StopMovingOrSizing()
+        SaveFrameState(selfFrame, "configFrame")
+    end)
+
+    -- Do not auto-open this window on UI reload.
+    f:Hide()
 
     local icon = f:CreateTexture(nil, "ARTWORK")
     icon:SetSize(20, 20)
@@ -663,7 +759,7 @@ function Jotter:CreateConfigFrame()
     end
 
     SectionHeader("General")
-    local useZone = Checkbox("Quick add uses current zone", "When enabled, todos typed into the main window are automatically assigned to your current zone.")
+    local useZone = Checkbox("Quick add uses current zone", "When enabled, notes typed into the main window are automatically assigned to your current zone.")
     SmallText("Tip: You can still edit the zone later in the editor window.")
     self.cfg_useZone = useZone
 
@@ -671,14 +767,14 @@ function Jotter:CreateConfigFrame()
     local hideCombat = Checkbox("Hide Jotter window while in combat", "When enabled, the main Jotter window will hide in combat and restore afterward if it was visible before combat.")
     self.cfg_hideCombat = hideCombat
 
-    local hideCompleted = Checkbox("Hide completed todos on the main window", "When enabled, completed todos will not be shown in the main list.")
+    local hideCompleted = Checkbox("Hide completed notes on the main window", "When enabled, completed notes will not be shown in the main list.")
     self.cfg_hideCompleted = hideCompleted
 
     local lockMain = Checkbox("Lock the main window (prevents moving/resizing)", "When enabled, the main Jotter window cannot be moved or resized.")
     self.cfg_lockMain = lockMain
 
     SectionHeader("Categories and Sorting")
-    SmallText("Category ordering affects how groups appear on the main window. Todos are ordered within a category based on their position in your todo list (use the editor up/down buttons).")
+    SmallText("Category ordering affects how groups appear on the main window. Notes are ordered within a category based on their position in your note list (use the editor up/down buttons).")
 
     -- Category ordering list
     local listBorder = CreateFrame("Frame", nil, content, "BackdropTemplate")
@@ -820,7 +916,7 @@ function Jotter:RefreshConfig()
             end)
 
             del:SetScript("OnClick", function()
-                -- Removing a category from the ordering does NOT delete todos.
+                -- Removing a category from the ordering does NOT delete notes.
                 table.remove(order, i)
                 Jotter:RefreshConfig()
                 Jotter:RefreshList()
@@ -849,10 +945,19 @@ end
 
 function Jotter:ToggleConfig()
     self:CreateConfigFrame()
-    if self.configFrame:IsShown() then
-        self.configFrame:Hide()
-    else
+    local show = not self.configFrame:IsShown()
+    if show then
         self.configFrame:Show()
+        if self.db and self.db.settings then
+            self.db.settings.configVisible = true
+        end
         self:RefreshConfig()
+    else
+        self.configFrame:Hide()
+        if self.db and self.db.settings then
+            self.db.settings.configVisible = false
+        end
+        SaveFrameState(self.configFrame, "configFrame")
     end
 end
+

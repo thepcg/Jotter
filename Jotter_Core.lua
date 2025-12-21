@@ -1,3 +1,30 @@
+--[[
+Jotter
+Repository: https://github.com/thepcg/Jotter
+Author: Edag
+License: MIT
+
+Copyright (c) 2025 Edag
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+]]
+
 local addonName, Jotter = ...
 Jotter = Jotter or {}
 _G.Jotter = Jotter -- handy for /dump Jotter
@@ -32,21 +59,29 @@ local GetCurrentZoneName = Jotter.GetCurrentZoneName
 
 local function Bool(v) return v and true or false end
 
---------------------------------------------------------------
--- SavedVariables defaults + migration
+----
+
+function Jotter:DebugPrint(...)
+    if self.db and self.db.settings and self.db.settings.debug then
+        print("|cff00ff99Jotter(debug):|r", ...)
+    end
+end
+----------------------------------------------------------
+-- SavedVariables defaults
 --------------------------------------------------------------
 local DEFAULTS = {
-    todos = {},
+    notes = {},
     settings = {
         -- Existing
         useCurrentZoneByDefault = true,  -- Quick-add box uses current zone if enabled
-        hideCompletedOnMain     = false, -- If enabled, completed todos are hidden on the main UI
+        hideCompletedOnMain     = false, -- If enabled, completed notes are hidden on the main UI
 
-        -- Feature 2: hide while in combat (default ON)
+        -- hide while in combat (default ON)
         hideInCombat            = true,
 
-        -- Feature 5: lockable + resizable main UI
+        -- lockable + resizable main UI
         lockMainWindow          = false,
+        mainVisible             = true,
         mainFrame = {
             point = "CENTER",
             relativePoint = "CENTER",
@@ -56,7 +91,36 @@ local DEFAULTS = {
             height = 220,
         },
 
-        -- Feature 3: categories
+        -- Editor + Config window persistence
+        editorVisible = false,
+        editorFrame = {
+            point = "CENTER",
+            relativePoint = "CENTER",
+            x = 0,
+            y = 0,
+            width = 740,
+            height = 460,
+        },
+
+        configVisible = false,
+        configFrame = {
+            point = "CENTER",
+            relativePoint = "CENTER",
+            x = 0,
+            y = 0,
+            width = 480,
+            height = 520,
+        },
+
+        -- Minimap button persistence
+        minimap = {
+            angle = 225,
+            hide  = false,
+        },
+
+        -- Debug logging toggle (off by default)
+        debug = false,
+        -- categories
         categoryOrder     = {},  -- array of category names in desired order
         categoryCollapsed = {},  -- map: [categoryName] = true if collapsed
     }
@@ -89,8 +153,8 @@ local function NormalizeCategoryName(cat)
     return cat
 end
 
-function Jotter:GetTodoCategory(todo)
-    local cat = NormalizeCategoryName(todo and todo.category or "")
+function Jotter:GetNoteCategory(note)
+    local cat = NormalizeCategoryName(note and note.category or "")
     if cat == "" then
         return "Uncategorized"
     end
@@ -119,14 +183,14 @@ local function InitDB()
     JotterDB = JotterDB or {}
     JotterDB = MergeDefaults(JotterDB, DEFAULTS)
 
-    -- Migrate/normalize each todo
-    for _, todo in ipairs(JotterDB.todos) do
-        if todo.zone == nil then todo.zone = "" end
-        if todo.description == nil then todo.description = "" end
-        if todo.done == nil then todo.done = false end
-        if todo.text == nil then todo.text = "" end
-        if todo.coords == nil then todo.coords = "" end
-        if todo.category == nil then todo.category = "" end -- Feature 3
+    -- Migrate/normalize each note
+    for _, note in ipairs(JotterDB.notes) do
+        if note.zone == nil then note.zone = "" end
+        if note.description == nil then note.description = "" end
+        if note.done == nil then note.done = false end
+        if note.text == nil then note.text = "" end
+        if note.coords == nil then note.coords = "" end
+        if note.category == nil then note.category = "" end -- 
     end
 
     -- Ensure "Uncategorized" is always part of ordering once we see any categories
@@ -153,9 +217,9 @@ local function Jotter_ParseCoordsString(coordsStr)
     return x, y
 end
 
-function Jotter:CreateWaypointForTodo(todo)
-    if not todo then return end
-    local coordsStr = Trim(todo.coords or "")
+function Jotter:CreateWaypointForNote(note)
+    if not note then return end
+    local coordsStr = Trim(note.coords or "")
     if coordsStr == "" then return end
 
     local x, y = Jotter_ParseCoordsString(coordsStr)
@@ -164,7 +228,7 @@ function Jotter:CreateWaypointForTodo(todo)
         return
     end
 
-    local zoneName    = Trim(todo.zone or "")
+    local zoneName    = Trim(note.zone or "")
     local currentZone = self.currentZone or GetCurrentZoneName()
 
     -- Current implementation only supports the current zone (simple + reliable).
@@ -210,6 +274,9 @@ function Jotter:SetMainVisible(visible, reason)
     -- Track explicit user intent so we don't "pop" the window back unexpectedly.
     if reason == "user" then
         self._userHidden = not visible
+        if self.db and self.db.settings then
+            self.db.settings.mainVisible = visible
+        end
     end
 
     if visible then
@@ -236,8 +303,8 @@ function Jotter:UpdateZone()
     if self.RefreshList then
         self:RefreshList()
     end
-end
 
+end
 --------------------------------------------------------------
 -- Event handling
 --------------------------------------------------------------
@@ -249,10 +316,31 @@ function Jotter:OnEvent(event, ...)
         InitDB()
 
         self:CreateMainFrame()
-        self:CreateEditorFrame()
-        self:CreateConfigFrame()
+        -- Editor and config frames are created lazily when first opened.
+        -- This keeps login/UI reload a bit lighter.
 
         self:UpdateZone()
+
+-- Restore persisted window visibility (main/editor/config)
+if self.db and self.db.settings then
+    -- Main
+    local wantMain = self.db.settings.mainVisible
+    if wantMain == nil then wantMain = true end
+    self._userHidden = not wantMain
+    self:SetMainVisible(wantMain, "restore")
+
+    -- Editor/Config are lazily created. Restore after a short delay so UI is fully ready.
+    C_Timer.After(0, function()
+        if not Jotter or not Jotter.db or not Jotter.db.settings then return end
+        if Jotter.db.settings.editorVisible then
+            Jotter:ToggleEditor(true)
+        end
+        if Jotter.db.settings.configVisible then
+            Jotter:ToggleConfig()
+        end
+    end)
+end
+
 
     elseif event == "PLAYER_ENTERING_WORLD"
         or event == "ZONE_CHANGED"
@@ -261,7 +349,7 @@ function Jotter:OnEvent(event, ...)
         self:UpdateZone()
 
     elseif event == "PLAYER_REGEN_DISABLED" then
-        -- Feature 2: Hide while in combat (respect prior user intent)
+        -- Hide while in combat (respect prior user intent)
         if self.db and self.db.settings and self.db.settings.hideInCombat and self.mainFrame then
             self._wasVisibleBeforeCombat = self:IsMainVisible() and (not self._userHidden)
             if self._wasVisibleBeforeCombat then
@@ -281,6 +369,20 @@ function Jotter:OnEvent(event, ...)
             end
             self._wasVisibleBeforeCombat = false
         end
+elseif event == "PLAYER_LOGOUT" then
+    if self.db and self.db.settings then
+        -- Persist visibility state (positions are already saved on drag/resize)
+        if self.mainFrame then
+            self.db.settings.mainVisible = self.mainFrame:IsShown() and true or false
+        end
+        if self.editorFrame then
+            self.db.settings.editorVisible = self.editorFrame:IsShown() and true or false
+        end
+        if self.configFrame then
+            self.db.settings.configVisible = self.configFrame:IsShown() and true or false
+        end
+    end
+
     end
 end
 
@@ -295,9 +397,10 @@ function Jotter:Init()
     self.frame:RegisterEvent("ZONE_CHANGED")
     self.frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 
-    -- Feature 2
+    -- 
     self.frame:RegisterEvent("PLAYER_REGEN_DISABLED")
     self.frame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    self.frame:RegisterEvent("PLAYER_LOGOUT")
 end
 
 --------------------------------------------------------------
@@ -314,8 +417,13 @@ SlashCmdList["JOTTER"] = function(msg)
         Jotter:SetMainVisible(true, "user")
     elseif msg == "hide" then
         Jotter:SetMainVisible(false, "user")
+    elseif msg == "debug" then
+        if Jotter.db and Jotter.db.settings then
+            Jotter.db.settings.debug = not (Jotter.db.settings.debug and true or false)
+            print("|cff00ff99Jotter:|r Debug is now " .. (Jotter.db.settings.debug and "ON" or "OFF"))
+        end
     else
-        print("|cff00ff99Jotter:|r /jotter show, /jotter hide, /jotter editor, /jotter config")
+        print("|cff00ff99Jotter:|r /jotter show, /jotter hide, /jotter editor, /jotter config, /jotter debug")
     end
 end
 
